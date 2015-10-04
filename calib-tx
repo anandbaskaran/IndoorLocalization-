@@ -1,0 +1,108 @@
+#include "contiki.h"
+#include "lib/list.h"
+#include "lib/memb.h"
+#include "lib/random.h"
+#include "net/rime/rime.h"
+#include <stdio.h>
+
+#define MAX_CALIB_PKTS 500
+
+/* This is the structure of calibration messages. */
+struct calib_msg {
+	uint8_t type;
+	uint8_t seqno;
+};
+
+/* These are the types of calibration messages. */
+enum {
+	CALIB_PING,
+	CALIB_PONG
+};
+
+/* This structure holds information about calibration packets. */
+struct calib_pkt {
+	/* The ->next pointer is needed since we are placing these on a
+     Contiki list. */
+	struct calib_pkt *next;
+
+	/* The ->addr field holds the Rime address of the neighbor. */
+	//	linkaddr_t addr;
+
+	/* The ->rssi field holds the Received Signal
+     Strength Indicator (RSSI) value of the incoming calibration packet. */
+	uint16_t rssi;
+
+	/* Each calibration packet contains a sequence number (seqno). The
+     ->seqno field holds this sequence number. */
+	uint8_t seqno;
+};
+
+linkaddr_t target_addr;
+
+char calib_req_rcvd = 0;
+char calib_done = 0;
+
+/* This holds the calib structure. */
+static struct unicast_conn calib;
+
+/* We first declare our calibration process. */
+PROCESS(calib_process, "Calibration process");
+
+/* The AUTOSTART_PROCESSES() definition specifies what processes to
+   start when this module is loaded. We put our process here. */
+AUTOSTART_PROCESSES(&calib_process);
+
+/* This function is called for every incoming calib packet. */
+static void calib_rcv(struct unicast_conn *c, const linkaddr_t *from)
+{
+	struct calib_msg *msg;
+	struct calib_pkt *pkt;
+
+	/* Grab the pointer to the incoming data. */
+	msg = packetbuf_dataptr();
+
+	/* We have two message types, CALIB_PING and
+	   CALIB_PONG. If we receive a CALIB_PING message, we
+	   print out a message and transmit a fixed no. of CALIB_PONG messages. */
+	if(msg->type == CALIB_PING) {
+		printf("Calibration request packet received from %d.%d",
+				from->u8[0], from->u8[1]);
+		target_addr = from;
+		calib_req_rcvd = 1;
+	}
+}
+
+/* This is where we define what function to be called when a unicast
+   is received. We pass a pointer to this structure in the
+   unicast_open() call below. */
+static const struct unicast_callbacks calib_callbacks = {calib_rcv};
+
+PROCESS_THREAD(calib_process, ev, data)
+{
+	static uint8_t seqno;
+	struct calib_msg msg;
+	struct calib_pkt *pkt;
+
+	PROCESS_EXITHANDLER(unicast_close(&calib);)
+
+	PROCESS_BEGIN();
+
+	unicast_open(&calib, 146, &calib_callbacks);
+
+	/* Wait for calibration request from target node */
+	while(1) {
+		if(calib_req_rcvd) {
+			/* Send fixed no. of CALIB_PONG packets. */
+			for(i = 0; i < MAX_CALIB_PKTS; i++) {
+				msg.seqno++;
+				msg.type = CALIB_PONG;
+				packetbuf_copyfrom(&msg, sizeof(struct calib_msg));
+				unicast_send(&calib, target_addr);
+				printf("Sending calibration response to %d.%d\n", target_addr.u8[0], target_addr.u8[1]);
+			}
+			calib_done = 1;
+		}
+	}
+
+	PROCESS_END();
+}
